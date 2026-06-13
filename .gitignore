@@ -1,0 +1,16 @@
+# Environment variables — NEVER commit this
+.env
+
+# Runtime state files (auto-generated)
+burnChatIds.json
+processedBurnEvents.json
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
