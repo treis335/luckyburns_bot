@@ -1,12 +1,11 @@
-# \xf0\x9f\x94\xa5 Lucky Burn Bot
+# 🔥 Lucky Burn Bot
 
 > Real-time token burn tracker for the **Supra blockchain**, delivered straight to your Telegram group.
 
-Built by [LuckyPowerBots](https://t.me/lucky_supra) | [X / Twitter](https://x.com/LuckyTokenz)
 
 ---
 
-## \xf0\x9f\x93\x8c What it does
+## 📌 What it does
 
 Monitors the Supra blockchain for `CoinDeposit` events sent to the **burn address** and instantly notifies subscribed Telegram groups with:
 
@@ -17,21 +16,23 @@ Monitors the Supra blockchain for `CoinDeposit` events sent to the **burn addres
 
 ---
 
-## \xe2\x9a\x99\xef\xb8\x8f Features
+## ⚙️ Features
 
-- \xf0\x9f\x94\xa5 Real-time burn detection (5s polling)
-- \xf0\x9f\x92\xb0 Live price via on-chain AMM reserves (SUPRA/CASH pair)
-- \xf0\x9f\x8e\xa8 Custom notification image (photo, GIF or sticker)
-- \xf0\x9f\x94\xa2 Configurable emoji count per burn amount
-- \xf0\x9f\x92\xb5 Minimum USD threshold to filter small burns
-- \xf0\x9f\x97\x91\xef\xb8\x8f Auto-delete previous alerts to keep groups clean
-- \xf0\x9f\x93\x8c Topic-aware — lock alerts to a specific forum topic
-- \xf0\x9f\x94\x97 Burn address info + SupraScan link built in
-- \xf0\x9f\x91\xae Admin-only configuration in groups
+| | Feature |
+|---|---|
+| 🔥 | Real-time burn detection (5s polling) |
+| 💰 | Live price via on-chain AMM reserves (SUPRA/CASH pair) |
+| 🎨 | Custom notification image (photo, GIF or sticker) |
+| 🔢 | Configurable emoji count per burn amount |
+| 💵 | Minimum USD threshold to filter small burns |
+| 🗑️ | Auto-delete previous alerts to keep groups clean |
+| 📌 | Topic-aware — lock alerts to a specific forum topic |
+| 🔗 | Burn address info + SupraScan link built in |
+| 👮 | Admin-only configuration in groups |
 
 ---
 
-## \xf0\x9f\x9a\x80 Setup
+## 🚀 Setup
 
 ### 1. Clone & install
 
@@ -63,71 +64,75 @@ node index.js
 
 ---
 
-## \xf0\x9f\xa4\x96 Commands
+## 🤖 Commands
 
 ### Anyone
 
 | Command | Description |
 |---|---|
-| `/luckyburn_start` | Open main menu |
-| `/luckyburn_price` | Current token price |
-| `/luckyburn_burned` | Total tokens burned |
-| `/luckyburn_burnaddress` | Burn address + SupraScan link |
-| `/luckyburn_help` | Command list |
+| `/luckyburn_start` | 🔥 Open main menu |
+| `/luckyburn_price` | 📊 Current token price |
+| `/luckyburn_burned` | 💀 Total tokens burned |
+| `/luckyburn_burnaddress` | 🔗 Burn address + SupraScan link |
+| `/luckyburn_help` | ℹ️ Command list |
 
 ### Admin only (in groups)
 
 | Command | Description |
 |---|---|
-| `/luckyburn_subscribe` | Enable burn alerts |
-| `/luckyburn_unsubscribe` | Disable burn alerts |
-| `/luckyburn_settoken <address>` | Set token to monitor |
-| `/luckyburn_changeimage` | Change notification image |
-| `/luckyburn_deleteprevious on\|off` | Toggle auto-delete |
-| `/luckyburn_setemoji <emoji>` | Set notification emoji |
-| `/luckyburn_setemojibase <amount>` | Tokens per emoji |
-| `/luckyburn_setminburnusd <usd>` | Min USD to trigger alert |
-| `/luckyburn_resettopic` | Reset pinned topic |
+| `/luckyburn_subscribe` | ✅ Enable burn alerts |
+| `/luckyburn_unsubscribe` | ❌ Disable burn alerts |
+| `/luckyburn_settoken <address>` | 🔹 Set token to monitor |
+| `/luckyburn_changeimage` | 🎨 Change notification image |
+| `/luckyburn_deleteprevious on\|off` | 🗑️ Toggle auto-delete |
+| `/luckyburn_setemoji <emoji>` | 🔥 Set notification emoji |
+| `/luckyburn_setemojibase <amount>` | 🔢 Tokens per emoji |
+| `/luckyburn_setminburnusd <usd>` | 💵 Min USD to trigger alert |
+| `/luckyburn_resettopic` | 📌 Reset pinned topic |
 
 ---
 
-## \xf0\x9f\x94\xa5 Burn Address
+## 🔥 Burn Address
 
-All burned tokens on Supra are permanently sent to:
+All burned tokens on Supra are permanently sent to this provably unspendable address:
 
 ```
 0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff
 ```
 
-[View on SupraScan \xe2\x86\x92](https://suprascan.io/address/0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff/f?tab=coins&pageNo=1&rows=10&assetType=coin)
+> No one controls this address. Tokens sent here are removed from circulation forever.
+
+[🔍 View on SupraScan](https://suprascan.io/address/0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff/f?tab=coins&pageNo=1&rows=10&assetType=coin)
 
 ---
 
-## \xf0\x9f\x8f\x97\xef\xb8\x8f Architecture
+## 🏗️ Architecture
 
-- **Runtime:** Node.js
-- **Blockchain:** Supra Mainnet RPC (`https://rpc-mainnet.supra.com/rpc/v1`)
-- **DEX:** Atmos AMM (Balancer-style weighted pools)
-- **Price:** Derived from on-chain AMM reserves (SUPRA \xe2\x86\x94 CASH pair)
-- **State:** JSON files (`burnChatIds.json`, `processedBurnEvents.json`)
+| | |
+|---|---|
+| **Runtime** | Node.js |
+| **Blockchain** | Supra Mainnet RPC |
+| **DEX** | Atmos AMM (Balancer-style weighted pools) |
+| **Price** | On-chain AMM reserves (SUPRA ↔ CASH pair) |
+| **State** | Local JSON files |
 
 ---
 
-## \xf0\x9f\x93\x81 Project Structure
+## 📁 Project Structure
 
 ```
 .
-\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 index.js                  # Main bot file
-\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 burnChatIds.json          # Subscribed chats (auto-created)
-\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 processedBurnEvents.json  # Processed event IDs (auto-created)
-\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 .env                      # Bot token (never commit this!)
-\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 .env.example              # Template
-\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 package.json
+├── index.js                  # Main bot file
+├── burnChatIds.json          # Subscribed chats (auto-created)
+├── processedBurnEvents.json  # Processed event IDs (auto-created)
+├── .env                      # Bot token — never commit this!
+├── .env.example              # Token template
+└── package.json
 ```
 
 ---
 
-## \xf0\x9f\x93\xa6 Dependencies
+## 📦 Dependencies
 
 | Package | Purpose |
 |---|---|
@@ -137,6 +142,6 @@ All burned tokens on Supra are permanently sent to:
 
 ---
 
-## \xf0\x9f\x93\x84 License
+## 📄 License
 
 MIT — free to use and modify.
