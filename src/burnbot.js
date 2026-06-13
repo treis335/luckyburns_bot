@@ -16,7 +16,7 @@ const BURN_ADDRESS_DISPLAY = '0x0000...ffff';
 const SUPRASCAN_BURN_URL = `https://suprascan.io/address/${BURN_ADDRESS}/f?tab=coins&pageNo=1&rows=10&assetType=coin`;
 const SUPRA_DECIMALS = 1e8;
 const CASH_DECIMALS = 1e8;
-const POLLING_INTERVAL_MS = 5000;
+const POLLING_INTERVAL_MS = 15000;
 const PRICE_INTERVAL_MS = 60 * 1000;
 const BURN_EVENT_TYPE = '0x1::coin::CoinDeposit';
 const CHAT_IDS_FILE = './burnChatIds.json';
