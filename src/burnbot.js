@@ -21,8 +21,14 @@ const PRICE_INTERVAL_MS = 60 * 1000;
 const BURN_EVENT_TYPE = '0x1::coin::CoinDeposit';
 const CHAT_IDS_FILE = './burnChatIds.json';
 const PROCESSED_EVENTS_FILE = './processedBurnEvents.json';
+const LAST_BLOCK_FILE = './lastProcessedBlock.json';
 const MAX_BLOCK_RANGE = 10;
 const MAX_PROCESSED_EVENTS = 10000;
+const PRICE_CACHE_TTL = 30000;          // 30 segundos de cache para preços
+const MAX_EVENTS_PER_CYCLE = 5;          // limite de eventos por ciclo
+const REQUEST_DELAY_MS = 1000;           // delay entre pedidos à API
+const INITIAL_BACKOFF_MS = 2000;         // backoff inicial para 429
+const MAX_BACKOFF_MS = 60000;            // backoff máximo
 
 // ==================== KNOWN TOKENS ====================
 const KNOWN_TOKENS = {
@@ -42,13 +48,14 @@ const KNOWN_TOKENS = {
 
 // ==================== GLOBAL STATE ====================
 let supraPrice = 0.007186;
-let tokenPriceCache = {};
+let tokenPriceCache = {};          // { typeTag: { price, timestamp } }
 let processedBurnEventIds = new Set();
 let fallbackEventCounter = 0;
 let lastProcessedBlock = 0;
 let pendingTokenInput = {};
 let pendingImageUploads = {};
 let pendingSettingsInput = {};
+let isProcessing = false;
 
 // ==================== INIT BOT ====================
 if (!TELEGRAM_BOT_TOKEN) {
@@ -58,38 +65,13 @@ if (!TELEGRAM_BOT_TOKEN) {
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 let botId = null;
 
-bot.getMe().then(async (me) => {
-  botId = me.id;
-  console.log(`[BurnBot] 🤖 Bot running as @${me.username} (ID: ${botId})`);
+// ==================== HELPERS ====================
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
-  // Register bot commands so they appear when user types "/"
-  try {
-    await bot.setMyCommands([
-      { command: 'luckyburn_start',          description: '🔥 Open main menu' },
-      { command: 'luckyburn_subscribe',      description: '✅ Subscribe to burn alerts' },
-      { command: 'luckyburn_unsubscribe',    description: '❌ Unsubscribe from burn alerts' },
-      { command: 'luckyburn_settoken',       description: '🔹 Set token to monitor' },
-      { command: 'luckyburn_changeimage',    description: '🎨 Change notification image' },
-      { command: 'luckyburn_deleteprevious', description: '🗑️ Toggle delete previous msgs (on|off)' },
-      { command: 'luckyburn_setemoji',       description: '🔥 Set notification emoji' },
-      { command: 'luckyburn_setemojibase',   description: '🔢 Set tokens per emoji' },
-      { command: 'luckyburn_setminburnusd',  description: '💵 Set minimum USD to trigger alert' },
-      { command: 'luckyburn_price',          description: '📊 Current token price' },
-      { command: 'luckyburn_burned',         description: '💀 Total tokens burned' },
-      { command: 'luckyburn_burnaddress',    description: '🔗 View the burn address on SupraScan' },
-      { command: 'luckyburn_resettopic',     description: '📌 Reset pinned topic' },
-      { command: 'luckyburn_help',           description: 'ℹ️ Help & command list' },
-    ]);
-    console.log('[BurnBot] ✅ Bot commands registered.');
-  } catch (err) {
-    console.error('[BurnBot] Failed to set commands:', err.message);
-  }
-}).catch(err => {
-  console.error('[BurnBot] Failed to get bot info:', err.message);
-  process.exit(1);
-});
+async function delayRandom(min = 300, max = 800) {
+  await sleep(Math.floor(Math.random() * (max - min + 1) + min));
+}
 
-// ==================== UTILITIES ====================
 function getTokenInfo(typeTag) {
   if (KNOWN_TOKENS[typeTag]) return { typeTag, ...KNOWN_TOKENS[typeTag] };
   return { typeTag, name: typeTag.split('::').pop(), decimals: 1e6, supply: 0, mediaFileId: null, mediaType: null };
@@ -123,14 +105,56 @@ function isFatalChatError(err) {
     m.includes('PEER_ID_INVALID');
 }
 
-// ==================== PRICE FUNCTIONS ====================
+// ==================== PERSISTENT BLOCK NUMBER ====================
+async function loadLastProcessedBlock() {
+  try {
+    const data = await fs.readFile(LAST_BLOCK_FILE, 'utf8');
+    const json = JSON.parse(data);
+    lastProcessedBlock = json.lastBlock || 0;
+    console.log(`[BurnBot] Loaded last processed block: ${lastProcessedBlock}`);
+  } catch (err) {
+    lastProcessedBlock = 0;
+    console.log('[BurnBot] No previous block data, starting from block 0');
+  }
+}
+
+async function saveLastProcessedBlock() {
+  await fs.writeFile(LAST_BLOCK_FILE, JSON.stringify({ lastBlock: lastProcessedBlock }, null, 2));
+}
+
+// ==================== API CALL WITH BACKOFF ====================
+async function callApiWithRetry(apiCall, context = '') {
+  let attempt = 0;
+  let delay = INITIAL_BACKOFF_MS;
+  while (true) {
+    try {
+      const result = await apiCall();
+      return result;
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 429) {
+        attempt++;
+        console.warn(`[BurnBot] ⚠️ Rate limited (429) ${context}, attempt ${attempt}, waiting ${delay}ms`);
+        await sleep(delay);
+        delay = Math.min(delay * 2, MAX_BACKOFF_MS);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+// ==================== PRICE FUNCTIONS WITH CACHE ====================
 async function callView(fn, typeArgs, args = []) {
-  const res = await axios.post(`${API_BASE_URL}/view`, { function: fn, type_arguments: typeArgs, arguments: args });
-  return res.data.result;
+  return callApiWithRetry(async () => {
+    await delayRandom(300, 800);
+    const res = await axios.post(`${API_BASE_URL}/view`, { function: fn, type_arguments: typeArgs, arguments: args });
+    return res.data.result;
+  }, `view ${fn}`);
 }
 
 async function updateSupraPrice() {
-  try {
+  await callApiWithRetry(async () => {
     const isXFirst = SUPRA_COIN_TYPE < CASH_COIN_TYPE;
     const typeArgs = isXFirst ? [SUPRA_COIN_TYPE, CASH_COIN_TYPE, CURVE_TYPE] : [CASH_COIN_TYPE, SUPRA_COIN_TYPE, CURVE_TYPE];
     const reserves = await callView(`${MODULE_ADDRESS}::router::get_reserves_size`, typeArgs);
@@ -145,29 +169,36 @@ async function updateSupraPrice() {
     const amountOut = afterFees * reserveOut / (reserveIn + afterFees);
     supraPrice = Number(amountOut) / CASH_DECIMALS;
     console.log(`[BurnBot] SUPRA price updated: $${supraPrice.toFixed(6)}`);
-  } catch (err) {
-    console.error('[BurnBot] Error updating SUPRA price:', err.message);
-  }
+  }, 'updateSupraPrice');
 }
 
 async function getTokenPriceUSD(typeTag) {
+  const now = Date.now();
+  const cached = tokenPriceCache[typeTag];
+  if (cached && (now - cached.timestamp) < PRICE_CACHE_TTL) {
+    return cached.price;
+  }
+
   try {
-    if (typeTag === SUPRA_COIN_TYPE) return supraPrice;
-    if (typeTag === CASH_COIN_TYPE) return 1;
-    const token = getTokenInfo(typeTag);
-    const isXFirst = typeTag < SUPRA_COIN_TYPE;
-    const typeArgs = isXFirst ? [typeTag, SUPRA_COIN_TYPE, CURVE_TYPE] : [SUPRA_COIN_TYPE, typeTag, CURVE_TYPE];
-    const reserves = await callView(`${MODULE_ADDRESS}::router::get_reserves_size`, typeArgs);
-    const [rx, ry] = reserves.map(v => Number(v));
-    const reserveToken = isXFirst ? rx : ry;
-    const reserveSupra = isXFirst ? ry : rx;
-    const priceInSupra = (reserveSupra / SUPRA_DECIMALS) / (reserveToken / token.decimals);
-    const priceUSD = priceInSupra * supraPrice;
-    tokenPriceCache[typeTag] = priceUSD;
-    return priceUSD;
+    let price;
+    if (typeTag === SUPRA_COIN_TYPE) price = supraPrice;
+    else if (typeTag === CASH_COIN_TYPE) price = 1;
+    else {
+      const token = getTokenInfo(typeTag);
+      const isXFirst = typeTag < SUPRA_COIN_TYPE;
+      const typeArgs = isXFirst ? [typeTag, SUPRA_COIN_TYPE, CURVE_TYPE] : [SUPRA_COIN_TYPE, typeTag, CURVE_TYPE];
+      const reserves = await callView(`${MODULE_ADDRESS}::router::get_reserves_size`, typeArgs);
+      const [rx, ry] = reserves.map(v => Number(v));
+      const reserveToken = isXFirst ? rx : ry;
+      const reserveSupra = isXFirst ? ry : rx;
+      const priceInSupra = (reserveSupra / SUPRA_DECIMALS) / (reserveToken / token.decimals);
+      price = priceInSupra * supraPrice;
+    }
+    tokenPriceCache[typeTag] = { price, timestamp: now };
+    return price;
   } catch (err) {
     console.error(`[BurnBot] Error getting price for ${typeTag}:`, err.message);
-    return tokenPriceCache[typeTag] || 0;
+    return cached ? cached.price : 0;
   }
 }
 
@@ -371,7 +402,6 @@ const settingsKeyboard = {
   }
 };
 
-// Keyboard with SupraScan link button (used for burn address display)
 function burnAddressKeyboard() {
   return {
     reply_markup: {
@@ -383,7 +413,6 @@ function burnAddressKeyboard() {
   };
 }
 
-// ==================== BURN ADDRESS TEXT ====================
 function getBurnAddressText() {
   return (
     `🔥 <b>Burn Address</b>\n\n` +
@@ -395,7 +424,7 @@ function getBurnAddressText() {
   );
 }
 
-// ==================== BURN EVENT FETCHING ====================
+// ==================== BURN EVENT FETCHING (WITH BLOCK PERSISTENCE) ====================
 async function getLatestBlock() {
   const res = await axios.get(`${API_BASE_URL}/block`);
   const h = Number(res.data.height);
@@ -404,43 +433,44 @@ async function getLatestBlock() {
 }
 
 async function fetchBurnEvents() {
-  try {
-    const latest = await getLatestBlock();
-    const start = lastProcessedBlock === 0 ? latest : lastProcessedBlock + 1;
-    const end = Math.min(latest + 1, start + MAX_BLOCK_RANGE);
-    if (start >= end) return [];
+  const latest = await getLatestBlock();
+  let start = lastProcessedBlock === 0 ? latest : lastProcessedBlock + 1;
+  let end = Math.min(latest + 1, start + MAX_BLOCK_RANGE);
+  if (start >= end) return [];
 
-    const res = await axios.get(`${API_BASE_URL}/events/${BURN_EVENT_TYPE}`, {
-      params: { start, end }, timeout: 10000
-    });
-    const events = res.data.data || [];
+  const res = await axios.get(`${API_BASE_URL}/events/${BURN_EVENT_TYPE}`, {
+    params: { start, end }, timeout: 10000
+  });
+  const events = res.data.data || [];
 
-    const burnEvents = events.filter(ev => {
-      const acc = ev.data?.account?.toLowerCase() || '';
-      return acc === BURN_ADDRESS_SHORT || acc === BURN_ADDRESS.toLowerCase();
-    });
+  const burnEvents = events.filter(ev => {
+    const acc = ev.data?.account?.toLowerCase() || '';
+    return acc === BURN_ADDRESS_SHORT || acc === BURN_ADDRESS.toLowerCase();
+  });
 
-    const newEvents = burnEvents.filter(ev => {
-      let id;
-      if (ev.guid?.account_address && ev.guid?.creation_number && ev.data?.timestamp) {
-        id = `${ev.guid.account_address}:${ev.guid.creation_number}:${ev.data.timestamp}`;
-      } else if (ev.transaction_hash) {
-        id = `tx:${ev.transaction_hash}`;
-      } else {
-        id = `block:${ev.block_height || start}:counter:${fallbackEventCounter++}`;
-      }
-      if (processedBurnEventIds.has(id)) return false;
-      processedBurnEventIds.add(id);
-      return true;
-    });
+  const newEvents = burnEvents.filter(ev => {
+    let id;
+    if (ev.guid?.account_address && ev.guid?.creation_number && ev.data?.timestamp) {
+      id = `${ev.guid.account_address}:${ev.guid.creation_number}:${ev.data.timestamp}`;
+    } else if (ev.transaction_hash) {
+      id = `tx:${ev.transaction_hash}`;
+    } else {
+      id = `block:${ev.block_height || start}:counter:${fallbackEventCounter++}`;
+    }
+    if (processedBurnEventIds.has(id)) return false;
+    processedBurnEventIds.add(id);
+    return true;
+  });
 
-    if (newEvents.length > 0) await saveProcessedEventIds();
+  if (newEvents.length > 0) {
+    await saveProcessedEventIds();
     lastProcessedBlock = latest;
-    return newEvents;
-  } catch (err) {
-    console.error('[BurnBot] Error fetching burn events:', err.message);
-    return [];
+    await saveLastProcessedBlock();
+  } else {
+    lastProcessedBlock = latest;
+    await saveLastProcessedBlock();
   }
+  return newEvents;
 }
 
 // ==================== SEND BURN NOTIFICATION ====================
@@ -475,7 +505,6 @@ async function sendBurnNotification(chatId, cfg, tokenInfo, amountRaw, usdValue,
     }
   }
 
-  // Determine media
   const imageId = cfg.imageFileId || tokenInfo.mediaFileId || null;
   const mediaType = cfg.imageFileId ? cfg.mediaType : tokenInfo.mediaType;
 
@@ -511,30 +540,41 @@ async function sendBurnNotification(chatId, cfg, tokenInfo, amountRaw, usdValue,
   await updateChat(chatId, 'updatemessageids', { msgIds: newMsgIds });
 }
 
-// ==================== PROCESS BURN EVENTS ====================
+// ==================== PROCESS BURN EVENTS (COM LIMITES) ====================
 async function processBurnEvents() {
-  const events = await fetchBurnEvents();
-  if (!events.length) return;
+  if (isProcessing) return;
+  isProcessing = true;
+  try {
+    const events = await fetchBurnEvents();
+    if (!events.length) return;
 
-  for (const ev of events) {
-    const typeTag = ev.data?.coin_type;
-    if (!typeTag) continue;
-    const tokenInfo = getTokenInfo(typeTag);
-    const amountRaw = Number(ev.data.amount);
+    const eventsToProcess = events.slice(0, MAX_EVENTS_PER_CYCLE);
+    for (const ev of eventsToProcess) {
+      const typeTag = ev.data?.coin_type;
+      if (!typeTag) continue;
+      const tokenInfo = getTokenInfo(typeTag);
+      const amountRaw = Number(ev.data.amount);
 
-    console.log(`[BurnBot] 🔥 Burn: ${formatAmount(amountRaw, tokenInfo.decimals)} ${tokenInfo.name}`);
+      console.log(`[BurnBot] 🔥 Burn: ${formatAmount(amountRaw, tokenInfo.decimals)} ${tokenInfo.name}`);
 
-    const priceUSD = await getTokenPriceUSD(typeTag);
-    const usdValue = priceUSD * (amountRaw / tokenInfo.decimals);
-    const totalBurned = await getBurnedBalance(typeTag);
-    const marketCap = tokenInfo.supply > 0 ? priceUSD * tokenInfo.supply : 0;
+      const priceUSD = await getTokenPriceUSD(typeTag);
+      const usdValue = priceUSD * (amountRaw / tokenInfo.decimals);
+      const totalBurned = await getBurnedBalance(typeTag);
+      const marketCap = tokenInfo.supply > 0 ? priceUSD * tokenInfo.supply : 0;
 
-    const configs = await loadChatIds();
-    for (const cfg of configs) {
-      if (!cfg.isSubscribed || !cfg.token || cfg.token !== typeTag) continue;
-      if (cfg.minBurnUsd !== null && usdValue < cfg.minBurnUsd) continue;
-      await sendBurnNotification(cfg.chatId, cfg, tokenInfo, amountRaw, usdValue, totalBurned, marketCap);
+      const configs = await loadChatIds();
+      for (const cfg of configs) {
+        if (!cfg.isSubscribed || !cfg.token || cfg.token !== typeTag) continue;
+        if (cfg.minBurnUsd !== null && usdValue < cfg.minBurnUsd) continue;
+        await sendBurnNotification(cfg.chatId, cfg, tokenInfo, amountRaw, usdValue, totalBurned, marketCap);
+        await sleep(REQUEST_DELAY_MS);
+      }
+      await sleep(REQUEST_DELAY_MS);
     }
+  } catch (err) {
+    console.error('[BurnBot] Error in processBurnEvents:', err.message);
+  } finally {
+    isProcessing = false;
   }
 }
 
@@ -802,7 +842,7 @@ bot.on('text', async (msg) => {
 
   const sendCmd = (content, extra = {}) => sendMsg(chatId, content, { ...extra, _topicId: incomingTopicId });
 
-  // ---- Pending token input ----
+  // Pending token input
   if (pendingTokenInput[chatId]) {
     delete pendingTokenInput[chatId];
     const isValid = /^0x[a-fA-F0-9]+::[a-zA-Z0-9_]+::[a-zA-Z0-9_]+$/.test(text);
@@ -821,7 +861,7 @@ bot.on('text', async (msg) => {
     return;
   }
 
-  // ---- Pending settings input ----
+  // Pending settings input
   const setting = pendingSettingsInput[chatId];
   if (setting) {
     delete pendingSettingsInput[chatId];
@@ -847,7 +887,7 @@ bot.on('text', async (msg) => {
 
   if (!text.startsWith('/')) return;
 
-  // ---- Commands ----
+  // ----- Commands -----
   if (text === '/luckyburn_subscribe') {
     const ok = await updateChat(chatId, 'subscribe', { topicId: incomingTopicId });
     if (ok) {
@@ -1023,10 +1063,15 @@ process.on('uncaughtException', err => console.error('[BurnBot] Uncaught excepti
   const { eventIds, counter } = await loadProcessedEventIds();
   processedBurnEventIds = eventIds;
   fallbackEventCounter = counter;
+  await loadLastProcessedBlock();
 
   await updateSupraPrice();
   setInterval(updateSupraPrice, PRICE_INTERVAL_MS);
 
-  setInterval(processBurnEvents, POLLING_INTERVAL_MS);
-  console.log('[BurnBot] 🔥 Lucky Burn Bot started. Monitoring burns on Supra blockchain...');
+  // Use setInterval para o polling em vez de recursive setTimeout para evitar acumulação
+  setInterval(() => {
+    processBurnEvents().catch(err => console.error('[BurnBot] Polling error:', err.message));
+  }, POLLING_INTERVAL_MS);
+
+  console.log('[BurnBot] 🔥 Lucky Burn Bot started (optimized). Monitoring burns...');
 })();
